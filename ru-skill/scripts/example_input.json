@@ -1,0 +1,54 @@
+{
+  "_doc": "Schema d'input prefill_form.py — couvre tous les paths IRISbox mappés (matrice 2026-05-06). Voir ru-skill/PATHS_MATRIX.md.",
+
+  "phone_number": "471793854",
+  "address": "Avenue de la Toison d'Or 79, 1060 Saint-Gilles",
+  "cadastral_reference": "21013B0029/00A005",
+  "commune": "Saint-Gilles",
+
+  "_doc_step1": "is_owner=false (cas dominant agent immo) → quality + intervenants requis. is_owner=true → ces champs sont ignorés.",
+  "is_owner": false,
+  "quality": "REAL_ESTATE_AGENT",
+  "intervenants": [
+    {
+      "type": "PHYSICAL",
+      "firstName": "Jean",
+      "lastName": "Dupont",
+      "email": "jean.dupont@example.com",
+      "phone": "0470123456",
+      "streetName": "Rue Royale",
+      "streetNumber": "15",
+      "box": "A",
+      "zipCode": "1000",
+      "city": "Bruxelles",
+      "country": "Belgique"
+    }
+  ],
+
+  "_doc_step2": "type=construction (default) → array constructions[]. type=terrain_nu → ignore constructions, peut avoir un array units[] direct (rare).",
+  "type": "construction",
+  "constructions": [
+    {
+      "denomination": "Immeuble principal",
+      "description": "Immeuble de 5 étages, façade en brique rouge, toiture en zinc.",
+      "units": [
+        {
+          "floor": "5",
+          "destination": "Logement",
+          "description": "Appartement 2 chambres avec terrasse"
+        }
+      ]
+    }
+  ],
+  "parking_count": 0,
+
+  "_doc_step3": "Clés docs : titre_propriete (REQUIRED), mandat (required si is_owner=false), reportage, croquis, plan_parcellaire, matrice_cadastrale, autre.",
+  "documents": {
+    "titre_propriete": "/path/to/titre.pdf",
+    "mandat": "/path/to/mandat.pdf",
+    "reportage": "/path/to/photos.pdf",
+    "plan_parcellaire": "/path/to/plan.pdf"
+  },
+
+  "resume_url": "https://irisbox.irisnet.be/irisbox/urban-information/citizen/edit/REPLACE_WITH_HEX/requester"
+}
