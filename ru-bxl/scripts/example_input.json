@@ -25,7 +25,7 @@
     }
   ],
 
-  "_doc_step2": "type=construction (default) → array constructions[]. type=terrain_nu → ignore constructions, peut avoir un array units[] direct (rare).",
+  "_doc_step2": "type=construction (default) → array constructions[]. type=terrain_nu → ignore constructions, peut avoir un array units[] TOP-LEVEL direct (rare), ex: \"units\": [{\"floor\": \"0\", \"destination\": \"Autre\", \"description\": \"...\"}]. denomination: jamais demandée à l'agent — dériver du type (Immeuble principal / Maison / Bâtiment).",
   "type": "construction",
   "constructions": [
     {
@@ -42,13 +42,14 @@
   ],
   "parking_count": 0,
 
-  "_doc_step3": "Clés docs : titre_propriete (REQUIRED), mandat (required si is_owner=false), reportage, croquis, plan_parcellaire, matrice_cadastrale, autre.",
+  "_doc_step3": "Clés docs : titre_propriete (REQUIRED), mandat (required si is_owner=false), reportage, croquis, plan_parcellaire, matrice_cadastrale, autre (y mettre l'acte de notoriété en succession). Chaque clé accepte un path string OU une liste de paths (max 10/catégorie, 20MB/fichier).",
   "documents": {
     "titre_propriete": "/path/to/titre.pdf",
     "mandat": "/path/to/mandat.pdf",
-    "reportage": "/path/to/photos.pdf",
+    "reportage": ["/path/to/photo1.jpg", "/path/to/photo2.jpg"],
     "plan_parcellaire": "/path/to/plan.pdf"
   },
 
+  "_doc_resume_url": "NE PAS remplir à la main : copier le champ `url` de l'event form_reached émis par auth_irisbox.py, AVANT de lancer prefill_form.py (exit 4 sinon).",
   "resume_url": "https://irisbox.irisnet.be/irisbox/urban-information/citizen/edit/REPLACE_WITH_HEX/requester"
 }

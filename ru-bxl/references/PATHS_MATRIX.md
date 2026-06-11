@@ -244,7 +244,8 @@ L'agent immo doit fournir AVANT que `prefill_form.py` ne tourne :
 
 ### Si construction (cas dominant)
 - **Description courte de la construction** (1 phrase) — ex: "Immeuble 5 étages, façade brique"
-- **Pour chaque unité** : étage + destination + (description optionnelle)
+- **Dénomination : PAS une question** — dérivée du type ("Immeuble principal" / "Maison" / "Bâtiment")
+- **Pour chaque unité** : étage + destination + (description optionnelle) ; maison unifamiliale = 1 unité Logement étage "0" sans question
 - **Nombre total de places de parking** (souvent 0 ou 1)
 
 ### Pour chaque propriétaire (extrait du mandat ou demandé)

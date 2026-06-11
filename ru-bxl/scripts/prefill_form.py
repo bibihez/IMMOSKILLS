@@ -57,7 +57,14 @@ from _selectors import (
     INTERVENANT_TYPE_MORAL_RADIO_ID,
     INTERVENANT_TYPE_PHYSICAL_RADIO_ID,
     INTERVENANT_ZIPCODE_ID,
-    LOCALISATION_CONFIRMER_BUTTON,
+    LANDING_COMM_MODAL_CLOSE_SELECTOR,
+    LANDING_COMM_MODAL_SELECTOR,
+    LOCALISATION_ADDR_INPUT_ID,
+    LOCALISATION_CAPAKEY_INPUT_ID,
+    LOCALISATION_MODAL_SELECTOR,
+    LOCALISATION_SAVE_ID,
+    LOCALISATION_SEARCH_ADDR_ID,
+    LOCALISATION_SEARCH_CAPAKEY_ID,
     MOBILE_CONTEXT,
     QUALITY_REAL_ESTATE_AGENT,
     RE_CAPAKEY,
@@ -71,6 +78,7 @@ from _selectors import (
     STEP2_ADD_CONSTRUCTION_BUTTON,
     STEP2_ADD_UNITE_BUTTON,
     STEP2_ADD_ZONE_BUTTON,
+    STEP2_ADD_ZONE_BUTTON_ID,
     STEP2_TOTAL_PARKING_INPUT_ID,
     STEP2_TYPE_CONSTRUCTION_PREFIX,
     STEP2_TYPE_TERRAIN_NU_PREFIX,
@@ -150,10 +158,42 @@ def collect_validation_errors(page: Page) -> list[dict]:
     return errors
 
 
+def dismiss_communication_modal(page: Page) -> None:
+    """IRISbox affiche une modale d'annonce ('Information', communication-modal) au
+    chargement de ses pages (y compris /requester sur un nouveau contexte). Elle
+    intercepte le clic sur #next (modal-container intercepts pointer events).
+    Best-effort : ferme-la si présente, ne bloque pas si absente."""
+    try:
+        modal = page.locator(LANDING_COMM_MODAL_SELECTOR).first
+        if not modal.is_visible(timeout=800):
+            return
+    except Exception:
+        return
+    try:
+        close_btn = page.locator(LANDING_COMM_MODAL_CLOSE_SELECTOR).first
+        if close_btn.is_visible(timeout=1000):
+            close_btn.click(timeout=3000)
+    except Exception:
+        pass
+    try:
+        if page.locator(LANDING_COMM_MODAL_SELECTOR).first.is_visible(timeout=500):
+            page.keyboard.press("Escape")
+    except Exception:
+        pass
+    try:
+        page.locator(LANDING_COMM_MODAL_SELECTOR).first.wait_for(state="hidden", timeout=5000)
+        emit("communication_modal_dismissed")
+    except Exception:
+        emit("communication_modal_dismiss_failed")
+
+
 def click_next(page: Page, step: str) -> None:
     """Click le bouton Suivant. Si disabled, scrape les erreurs de validation
     et exit avec code 1 + détails. Si enabled mais intercepté par overlay,
     fallback sur force=True."""
+    # La modale d'annonce IRISbox peut réapparaître à chaque page → la fermer
+    # avant tout clic Suivant pour ne pas faire échouer la navigation.
+    dismiss_communication_modal(page)
     next_btn = page.locator("#next")
     next_btn.wait_for(state="visible", timeout=5000)
     if next_btn.is_disabled():
@@ -163,9 +203,16 @@ def click_next(page: Page, step: str) -> None:
     try:
         next_btn.click(timeout=3000)
     except PlaywrightTimeoutError:
-        # Overlay mobile probablement (ectz-shortcut, stakeholder-list) — fallback force
-        emit("click_next_fallback_force", step=step)
-        next_btn.click(force=True)
+        # La modale d'annonce peut apparaître ~3s après le load (course de timing).
+        # Re-dismiss + retry normal AVANT le force : force=True "traverse" la modale
+        # sans effet et masque le vrai problème.
+        dismiss_communication_modal(page)
+        try:
+            next_btn.click(timeout=3000)
+        except PlaywrightTimeoutError:
+            # Overlay mobile (ectz-shortcut, stakeholder-list) — dernier recours
+            emit("click_next_fallback_force", step=step)
+            next_btn.click(force=True)
 
 
 def click_button_force(page: Page, name: str) -> None:
@@ -222,26 +269,49 @@ def fill_step1_demandeur(page: Page, data: dict) -> None:
             emit_error_and_exit(1, "step1: is_owner=false but no intervenants provided",
                                 hint="data.intervenants must list at least 1 owner")
         for interv in intervenants:
-            full_name = f"{interv.get('firstName', '')} {interv.get('lastName', '')}".strip()
-            if _intervenant_already_present(page, full_name):
+            first_name = interv.get("firstName", "")
+            last_name = interv.get("lastName", "")
+            full_name = f"{first_name} {last_name}".strip()
+            if _intervenant_already_present(page, first_name, last_name):
                 emit("intervenant_already_present", name=full_name)
                 continue
             add_intervenant(page, interv)
             emit("intervenant_added", name=full_name, type=interv.get("type", "PHYSICAL"))
 
     click_next(page, "requester")
-    page.wait_for_url(URL_PATTERN_STEP["building"], timeout=15000)
+    try:
+        page.wait_for_url(URL_PATTERN_STEP["building"], timeout=15000)
+    except PlaywrightTimeoutError:
+        # Draft déjà avancé : l'étape 1 est validée côté serveur, le clic Suivant
+        # ne déclenche pas la navigation (radio/champs déjà "soumis"). On navigue
+        # directement vers /building — autorisé une fois l'étape franchie.
+        if URL_PATTERN_STEP["requester"].search(page.url):
+            building_url = re.sub(r"/requester(?=[/?#]|$)", "/building", page.url)
+            emit("step1_advanced_draft_direct_nav", to=building_url)
+            page.goto(building_url, wait_until="domcontentloaded")
+            dismiss_communication_modal(page)
+            page.wait_for_selector("#next", state="visible", timeout=15000)
+        else:
+            raise
     emit("step_completed", **{"from": "requester", "to": "building"})
 
 
-def _intervenant_already_present(page: Page, full_name: str) -> bool:
-    """Cherche le nom dans la table 'Liste des intervenants' (h3#stakeholders).
-    Sur la page parent, IRISbox affiche les intervenants ajoutés en lignes
-    de table avec le nom complet visible."""
-    if not full_name:
+def _intervenant_already_present(page: Page, first_name: str, last_name: str) -> bool:
+    """Cherche l'intervenant dans la table 'Liste des intervenants'.
+    ⚠️ La table a Prénom et Nom dans des cellules SÉPARÉES : chercher le nom
+    complet comme un seul texte ne matche jamais (→ doublons à chaque re-run).
+    On cherche donc une LIGNE contenant à la fois le prénom et le nom."""
+    last_name = (last_name or "").strip()
+    first_name = (first_name or "").strip()
+    if not last_name:
         return False
     try:
-        return page.get_by_text(full_name).first.is_visible(timeout=500)
+        rows = page.locator("tr, [role=row]").filter(has_text=last_name)
+        for i in range(rows.count()):
+            txt = rows.nth(i).inner_text(timeout=300)
+            if last_name in txt and (not first_name or first_name in txt):
+                return True
+        return False
     except Exception:
         return False
 
@@ -305,6 +375,29 @@ def add_intervenant(page: Page, interv: dict) -> None:
         pass
 
 
+def _check_radio_reliably(page: Page, selector: str, attempts: int = 3) -> None:
+    """Coche un radio Angular de façon fiable. check(force=True) peut cliquer dans
+    le vide (backdrop de modale en cours de fade → 'did not change its state').
+    Stratégie : check normal → vérif is_checked → retry → dernier recours clic JS
+    (déclenche les handlers Angular, insensible aux overlays)."""
+    radio = page.locator(selector)
+    for _ in range(attempts):
+        try:
+            radio.check(timeout=4000)
+        except Exception:
+            pass
+        try:
+            if radio.is_checked():
+                return
+        except Exception:
+            pass
+        page.wait_for_timeout(600)
+    radio.evaluate("el => el.click()")
+    page.wait_for_timeout(300)
+    if not radio.is_checked():
+        emit_error_and_exit(1, f"radio {selector} refuse de se cocher (3 retries + clic JS)")
+
+
 def fill_step2_bien(page: Page, data: dict) -> None:
     """Étape 2 : Bien.
 
@@ -326,7 +419,7 @@ def fill_step2_bien(page: Page, data: dict) -> None:
     bien_type = data.get("type", "construction")
     if bien_type == "terrain_nu":
         # Path LAND — utilise l'ID stable au lieu du label texte (FR/EN tolérant)
-        page.locator("#land-area").check(force=True)
+        _check_radio_reliably(page, "#land-area")
         try:
             page.wait_for_load_state("networkidle", timeout=3000)
         except PlaywrightTimeoutError:
@@ -344,7 +437,7 @@ def fill_step2_bien(page: Page, data: dict) -> None:
             emit("unit_added", floor=unit["floor"], destination=unit["destination"])
     else:
         # Path BUILDING (default)
-        page.locator("#building-area").check(force=True)
+        _check_radio_reliably(page, "#building-area")
         try:
             page.wait_for_load_state("networkidle", timeout=3000)
         except PlaywrightTimeoutError:
@@ -437,38 +530,51 @@ def _unit_already_present(page: Page, unit: dict) -> bool:
 
 
 def _add_parcelle(page: Page, data: dict) -> None:
-    page.get_by_role("button", name=STEP2_ADD_ZONE_BUTTON).click(force=True)
-    modal = page.get_by_role("dialog").filter(has_text="Localisation du bien")
+    """Ouvre la modale 'Localisation du bien' (#mapModal, refonte IRISbox 2026) et
+    localise le bien par capakey (dominant) ou adresse autocomplete. IDs stables.
+    ⚠️ Le bouton d'ouverture exige un clic NORMAL : force=True ne déclenche pas le
+    handler Angular et la modale ne s'ouvre pas."""
+    page.locator(f"#{STEP2_ADD_ZONE_BUTTON_ID}").click()
+    # La modale monte un textbox capakey (#capa-key-finder) + combobox adresse
+    page.wait_for_selector(f"#{LOCALISATION_CAPAKEY_INPUT_ID}", state="visible", timeout=10000)
 
     capakey = (data.get("cadastral_reference") or "").strip()
     if capakey and RE_CAPAKEY.match(capakey):
-        modal.get_by_role("textbox", name="Parcelle").fill(capakey)
-        modal.get_by_role("button", name="Search").last.click()
+        page.locator(f"#{LOCALISATION_CAPAKEY_INPUT_ID}").fill(capakey)
+        page.locator(f"#{LOCALISATION_SEARCH_CAPAKEY_ID}").click()
     else:
         address = data.get("address", "").strip()
         if not address:
             emit_error_and_exit(4, "Neither cadastral_reference nor address provided")
-        combo = modal.get_by_role("combobox", name="Adresse")
+        combo = page.locator(f"#{LOCALISATION_ADDR_INPUT_ID}")
         combo.fill(address)
+        # Autocomplete : attendre la suggestion bleue puis sélectionner la 1re.
+        # Fallback : bouton Rechercher adresse si pas de listbox.
         try:
-            modal.get_by_role("listbox").wait_for(timeout=5000)
+            page.get_by_role("listbox").wait_for(timeout=5000)
+            page.get_by_role("option").first.click()
         except PlaywrightTimeoutError:
-            emit_error_and_exit(1, "address autocomplete returned no suggestions",
-                                address=address)
-        modal.get_by_role("option").first.click()
+            page.locator(f"#{LOCALISATION_SEARCH_ADDR_ID}").click()
 
-    confirmer = modal.get_by_role("button", name=LOCALISATION_CONFIRMER_BUTTON)
-    confirmer.wait_for(state="visible")
-    # Le backend IRISbox prend qq centaines de ms pour résoudre adresse→capakey.
-    # On poll jusqu'à 8s avant d'abandonner.
-    for _ in range(40):
-        if not confirmer.is_disabled():
+    # Confirmer (#save-map) — activé après résolution backend (capakey→parcelle). Poll 10s.
+    save = page.locator(f"#{LOCALISATION_SAVE_ID}")
+    save.wait_for(state="visible", timeout=10000)
+    for _ in range(50):
+        if not save.is_disabled():
             break
         page.wait_for_timeout(200)
     else:
-        emit_error_and_exit(1, "address resolved but Confirmer button stayed disabled after 8s")
-    confirmer.click(force=True)
-    page.get_by_role("dialog").wait_for(state="hidden", timeout=10000)
+        emit_error_and_exit(1, "localisation: Confirmer (#save-map) stayed disabled after 10s",
+                            capakey=capakey or None, address=data.get("address"))
+    save.click()
+    # Modale fermée = bouton Confirmer détaché du DOM
+    save.wait_for(state="hidden", timeout=10000)
+    # Le backdrop Bootstrap met ~300-500ms à disparaître (fade) APRÈS le contenu de
+    # la modale — il avale les clics suivants (radio areaType). Attendre sa fin.
+    try:
+        page.locator(".modal-backdrop").last.wait_for(state="hidden", timeout=5000)
+    except Exception:
+        pass
 
 
 def add_construction_only(page: Page, construction: dict) -> None:
@@ -550,28 +656,31 @@ def fill_step3_documents(page: Page, data: dict) -> None:
         emit_error_and_exit(1, "documents.mandat is required when is_owner=false",
                             hint="Upload le PDF du mandat signé par le propriétaire")
 
-    for key, file_path_str in docs.items():
-        if not file_path_str:
+    for key, value in docs.items():
+        if not value:
             continue
         label = DOC_LABEL_BY_KEY.get(key)
         if not label:
             emit("validation_error", step="documents", field=key,
                  message=f"unknown document key '{key}'")
             continue
-        path = Path(file_path_str)
-        if not path.is_file():
-            emit_error_and_exit(4, f"document file not found: {path}", key=key)
-        # Idempotency : skip si le filename est déjà présent dans le DOM
-        try:
-            existing = page.get_by_text(path.name).first
-            if existing.is_visible(timeout=300):
-                emit("document_already_uploaded", category=key, label=label, path=str(path))
-                continue
-        except Exception:
-            pass
-        upload_document(page, label, path)
-        emit("document_uploaded", category=key, label=label, path=str(path),
-             size=path.stat().st_size)
+        # IRISbox accepte jusqu'à 10 fichiers/catégorie : string OU liste de paths
+        file_paths = value if isinstance(value, list) else [value]
+        for file_path_str in file_paths:
+            path = Path(file_path_str)
+            if not path.is_file():
+                emit_error_and_exit(4, f"document file not found: {path}", key=key)
+            # Idempotency : skip si le filename est déjà présent dans le DOM
+            try:
+                existing = page.get_by_text(path.name).first
+                if existing.is_visible(timeout=300):
+                    emit("document_already_uploaded", category=key, label=label, path=str(path))
+                    continue
+            except Exception:
+                pass
+            upload_document(page, label, path)
+            emit("document_uploaded", category=key, label=label, path=str(path),
+                 size=path.stat().st_size)
 
     # IRISbox effectue probablement un scan/validation async post-upload avant
     # d'autoriser le passage à /summary. On laisse 3s + log avant click.
@@ -640,6 +749,8 @@ def run(playwright: Playwright, session_dir: Path, data: dict,
             page.wait_for_selector("#next", state="visible", timeout=15000)
         except PlaywrightTimeoutError:
             pass
+        # Fermer la modale d'annonce qui réapparaît sur un nouveau contexte navigateur.
+        dismiss_communication_modal(page)
         force_french_ui(page)
 
         page_text = page.locator("body").inner_text(timeout=5000)
@@ -705,18 +816,47 @@ def run(playwright: Playwright, session_dir: Path, data: dict,
 
 
 def _dump_failure_state(page: Page | None, session_dir: Path, tag: str) -> None:
-    """Capture screenshot + URL + validation errors visibles pour diagnostic post-mortem."""
+    """Capture screenshot + URL + validation errors + dump DOM, puis émet un event
+    `rescue_context` agrégé : tout ce qu'un agent LLM (OpenClaw) doit savoir pour
+    reprendre l'étape à la main dans son propre navigateur (storage_state.json du
+    session_dir + PATHS_MATRIX.md comme manuel), puis relancer ce script — qui
+    reprendra idempotent là où le draft en est."""
     if page is None:
         return
+    shot_path = None
     try:
         shot = session_dir / f"prefill_failure_{tag}.png"
         page.screenshot(path=str(shot), full_page=True)
-        emit("failure_screenshot", path=str(shot), url=page.url)
+        shot_path = str(shot)
+        emit("failure_screenshot", path=shot_path, url=page.url)
     except Exception as se:
         emit("failure_screenshot_failed", error=str(se)[:200])
+    errors = []
     try:
         errors = collect_validation_errors(page)
         emit("failure_validation_errors", errors=errors)
+    except Exception:
+        pass
+    dom_path = None
+    try:
+        dom = session_dir / f"prefill_failure_{tag}.html"
+        dom.write_text(page.content(), encoding="utf-8")
+        dom_path = str(dom)
+    except Exception:
+        pass
+    try:
+        m = re.search(r"/(requester|building|documents|summary|signature)(?:[?#]|$)", page.url)
+        emit("rescue_context",
+             step=m.group(1) if m else "unknown",
+             url=page.url,
+             failure_tag=tag,
+             screenshot=shot_path,
+             dom_dump=dom_path,
+             validation_errors=errors,
+             storage_state=str(session_dir / "storage_state.json"),
+             manual="references/PATHS_MATRIX.md",
+             resume_hint="complète l'étape affichée à la main, puis relance "
+                         "prefill_form.py tel quel — il saute ce qui est déjà fait")
     except Exception:
         pass
 

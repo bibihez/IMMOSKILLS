@@ -5,7 +5,7 @@ Trois fichiers, deux scripts CLI, zero submit.
 ## Setup
 
 ```bash
-cd ru-skill/scripts
+cd ru-bxl/scripts
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium

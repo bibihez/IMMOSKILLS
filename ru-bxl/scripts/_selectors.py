@@ -68,6 +68,25 @@ RE_DRAFT_REFERENCE = re.compile(r"RUSI-\d{6}-\d{7}")
 # Bouton CTA principal landing — substring suffit, accent FR géré par get_by_role
 LANDING_CTA_NAME = "Introduire"
 
+# Mode --session-only : entrée par "Mon espace" (dashboard) — affiche le même
+# dialogue "Me connecter" SANS créer de demande (sondé 2026-06-11). Sert à
+# ré-authentifier pour reprendre un draft existant sans créer de draft orphelin.
+URL_DASHBOARD = "https://irisbox.irisnet.be/irisbox/dashboard"
+# Session acquise = retour post-SSO sur n'importe quelle page irisbox
+URL_PATTERN_SESSION_READY = re.compile(
+    r"irisbox\.irisnet\.be/irisbox/(dashboard|my-box|urban-information)")
+
+# Modale d'annonce "Information" (aria-labelledby="communication-modal") qu'IRISbox
+# peut afficher au chargement de la landing. Elle intercepte le clic sur le CTA
+# (modal-container intercepts pointer events). Apparue côté IRISbox courant 2026,
+# absente du recon de mai. Un seul bouton de fermeture : croix `aria-label="Close"`.
+LANDING_COMM_MODAL_SELECTOR = "modal-container[aria-modal='true'].show, .modal.show"
+# ⚠️ aria-label dépend de la locale ("Close" en EN, "Fermer" en fr-BE mobile) →
+# sélecteur par CLASSE uniquement. Fallback Escape prouvé efficace (2026-06-10).
+LANDING_COMM_MODAL_CLOSE_SELECTOR = (
+    "modal-container.show button.close, .modal.show button.close"
+)
+
 # Dialog auth obligatoire (apparaît au clic du CTA si non authentifié)
 DIALOG_AUTH_TITLE = "Authentification obligatoire"
 # UI bilingue selon locale: FR='Me connecter', EN='Connect me'
@@ -169,17 +188,30 @@ INTERVENANT_CANCEL_BUTTON_ID = "cancel"  # ⚠️ même ID que le bouton Précé
 # ---------------------------------------------------------------------------
 
 STEP2_ADD_ZONE_BUTTON = "Ajouter une zone géographique"
+# Bouton qui ouvre la modale de localisation. ID stable. ⚠️ Clic NORMAL requis :
+# force=True ne déclenche pas le handler Angular d'ouverture de la modale.
+STEP2_ADD_ZONE_BUTTON_ID = "address-select"
 
 # Modal "Localisation du bien" (apparaît au clic Ajouter une zone)
+# Refonte IRISbox 2026 : la modale est `#mapModal` (carte OpenLayers). IDs stables
+# observés en live 2026-06-10, remplacent les anciens selectors par-nom EN ("Search").
 DIALOG_LOCALISATION_TITLE = "Localisation du bien"
+LOCALISATION_MODAL_SELECTOR = "#mapModal, modal-container:has(#capa-key-finder)"
+LOCALISATION_ADDR_INPUT_ID = "addr-map-finder"        # combobox adresse (autocomplete)
+LOCALISATION_CAPAKEY_INPUT_ID = "capa-key-finder"     # textbox parcelle (capakey)
+LOCALISATION_SEARCH_ADDR_ID = "search-address"        # bouton Rechercher (adresse)
+LOCALISATION_SEARCH_CAPAKEY_ID = "search-capa-key"    # bouton Rechercher (capakey)
+LOCALISATION_SAVE_ID = "save-map"                     # bouton Confirmer
+LOCALISATION_CANCEL_ID = "cancel-map"                 # bouton Annuler
+LOCALISATION_CLOSE_ID = "cross-close"                 # croix fermeture
+
+# noms conservés pour compat / autocomplete adresse (combobox = role=combobox)
 LOCALISATION_ADRESSE_COMBOBOX_NAME = "Adresse"
 LOCALISATION_PARCELLE_TEXTBOX_NAME = "Parcelle"
 # Capakey format: 5 chiffres + 1 lettre + 4 chiffres + / + 5 caractères + nnA
 RE_CAPAKEY = re.compile(r"^\d{5}[A-Z]\d{4}/\d{2}[A-Z]\d{3}$")
 # Ex: "21013B0029/00A005"
 
-LOCALISATION_SEARCH_BUTTON = "Search"
-LOCALISATION_CANCEL_BUTTON = "Cancel"
 LOCALISATION_CONFIRMER_BUTTON = "Confirmer"
 
 # IMPORTANT: Le combobox Adresse passe à `[expanded]` quand l'autocomplete

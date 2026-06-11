@@ -2,6 +2,14 @@
 
 Spec du flow Telegram qui collecte les infos de l'agent immo et lance `auth_irisbox.py` + `prefill_form.py`.
 
+> ⚠️ **2026-06-10 — SKILL.md est canonique en cas de divergence.** Deltas depuis ce design :
+> 1. Mandat + **titre de propriété demandés ensemble au Tour 1** (pas le titre au récap).
+> 2. Le **capakey extrait du titre de propriété est la localisation primaire** (chemin
+>    prouvé E2E) ; l'autocomplete adresse n'est que le fallback. Dans le mapping ci-dessous,
+>    `cadastral_reference` doit être rempli depuis le titre, pas laissé vide.
+> 3. **`validate_input.py` tourne avant le récap pré-flight** (fail-fast, erreurs relayables).
+> 4. Mapper le langage naturel vers l'enum destinations ("appartement" → Logement).
+
 ## Scope V1
 
 **In** :

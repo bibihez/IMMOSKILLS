@@ -24,6 +24,8 @@ from typing import Any
 
 from playwright.sync_api import sync_playwright
 
+import sys as _sys, pathlib as _pl
+_sys.path.insert(0, str(_pl.Path(__file__).resolve().parent.parent))  # _selectors vit dans scripts/
 from _selectors import MOBILE_CONTEXT
 
 

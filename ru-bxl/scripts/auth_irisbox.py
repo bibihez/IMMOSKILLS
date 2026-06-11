@@ -52,11 +52,15 @@ from _selectors import (
     ITSME_PHONE_SEND_RE,
     ITSME_PROVE_HEADING_RE,
     ITSME_TIMEOUT_SECONDS,
+    LANDING_COMM_MODAL_CLOSE_SELECTOR,
+    LANDING_COMM_MODAL_SELECTOR,
     LANDING_CTA_NAME,
     MOBILE_CONTEXT,
     RE_DRAFT_REFERENCE,
+    URL_DASHBOARD,
     URL_LANDING,
     URL_PATTERN_FORM_REACHED,
+    URL_PATTERN_SESSION_READY,
 )
 
 
@@ -79,11 +83,39 @@ def force_french_ui(page) -> None:
         page.wait_for_load_state("networkidle", timeout=5000)
 
 
-def navigate_to_itsme_phone_form(page, phone_number: str) -> None:
-    """Landing → CTA → dialog auth → CSAM → tile itsme → form téléphone (iPhone UA)."""
-    page.goto(URL_LANDING, wait_until="domcontentloaded")
-    page.get_by_role("link", name=LANDING_CTA_NAME).first.click()
+def dismiss_communication_modal(page) -> None:
+    """IRISbox peut afficher une modale d'annonce ('Information', communication-modal)
+    au chargement de la landing. Elle intercepte le clic sur le CTA. Best-effort :
+    ferme-la si présente, ne bloque pas si absente (apparition intermittente)."""
+    try:
+        modal = page.locator(LANDING_COMM_MODAL_SELECTOR).first
+        if not modal.is_visible(timeout=2500):
+            return
+    except Exception:
+        return
+    # 1) clic sur la croix de fermeture (aria-label="Close")
+    try:
+        close_btn = page.locator(LANDING_COMM_MODAL_CLOSE_SELECTOR).first
+        if close_btn.is_visible(timeout=1000):
+            close_btn.click(timeout=3000)
+    except Exception:
+        pass
+    # 2) fallback Escape si la modale persiste (modale Bootstrap ferme sur Escape)
+    try:
+        if page.locator(LANDING_COMM_MODAL_SELECTOR).first.is_visible(timeout=500):
+            page.keyboard.press("Escape")
+    except Exception:
+        pass
+    # 3) attendre la disparition avant de cliquer le CTA (sinon pointer intercepté)
+    try:
+        page.locator(LANDING_COMM_MODAL_SELECTOR).first.wait_for(state="hidden", timeout=5000)
+        emit("communication_modal_dismissed")
+    except Exception:
+        emit("communication_modal_dismiss_failed")
 
+
+def _connect_dialog_to_itsme(page, phone_number: str) -> None:
+    """Partie commune : dialogue 'Me connecter' → CSAM → tile itsme → form téléphone → Send."""
     dialog = page.get_by_role("dialog")
     dialog.get_by_role("button", name=DIALOG_AUTH_CONNECT_RE).click()
 
@@ -105,6 +137,33 @@ def navigate_to_itsme_phone_form(page, phone_number: str) -> None:
         emit_error_and_exit(2, "itsme Send button stayed disabled — phone number rejected",
                             phone=phone_number)
     send.click()
+
+
+def navigate_to_itsme_phone_form(page, phone_number: str) -> None:
+    """Landing → CTA → dialog auth → CSAM → tile itsme → form téléphone (iPhone UA)."""
+    page.goto(URL_LANDING, wait_until="domcontentloaded")
+    dismiss_communication_modal(page)
+    # ⚠️ La modale d'annonce apparaît parfois ~3s APRÈS le load (course de timing) :
+    # le dismiss ci-dessus peut la rater. Retry du clic avec re-dismiss à chaque
+    # interception plutôt qu'un wait fixe.
+    cta = page.get_by_role("link", name=LANDING_CTA_NAME).first
+    try:
+        cta.click(timeout=6000)
+    except PlaywrightTimeoutError:
+        dismiss_communication_modal(page)
+        cta.click(timeout=10000)
+
+    _connect_dialog_to_itsme(page, phone_number)
+
+
+def navigate_session_only(page, phone_number: str) -> None:
+    """Mode --session-only : auth par 'Mon espace' (dashboard) SANS créer de demande.
+    Le dashboard non-authentifié affiche directement le dialogue 'Me connecter'
+    (sondé 2026-06-11). Sert à reprendre un draft existant après expiration de
+    session, sans laisser de draft orphelin vide."""
+    page.goto(URL_DASHBOARD, wait_until="domcontentloaded")
+    dismiss_communication_modal(page)
+    _connect_dialog_to_itsme(page, phone_number)
 
 
 def capture_icon(page, output_dir: Path) -> tuple[int, Path]:
@@ -199,22 +258,37 @@ def auto_handle_post_itsme_popups(page) -> None:
                 pass
 
 
-def wait_for_form_and_extract_ids(page, output_dir: Path | None = None) -> tuple[str, str]:
-    """Bloque jusqu'à ce que l'URL match /requester. Retourne (request_id, draft_id).
+def wait_for_form_and_extract_ids(page, output_dir: Path | None = None,
+                                  session_only: bool = False) -> tuple[str, str]:
+    """Bloque jusqu'à ce que l'URL match /requester (ou, en --session-only,
+    n'importe quelle page irisbox post-SSO). Retourne (request_id, draft_id) —
+    vides en session_only.
 
     Polling URL toutes les 2s + auto-click cookie/OAuth-consent popups en chemin
     + screenshot+url emit toutes les 30s pour diag."""
+    target_pattern = URL_PATTERN_SESSION_READY if session_only else URL_PATTERN_FORM_REACHED
     poll_interval_ms = 2000
     diag_every_n = 15  # 15 * 2s = 30s
     elapsed = 0
     n = 0
     form_reached_seen = False
     while elapsed < ITSME_TIMEOUT_SECONDS * 1000:
-        if URL_PATTERN_FORM_REACHED.search(page.url):
+        if target_pattern.search(page.url):
             form_reached_seen = True
             break
         # Tente de gérer cookie + OAuth consent à chaque tick (no-op si pas visible)
         auto_handle_post_itsme_popups(page)
+        # Edge case observé 2026-06-10 : le retour SSO post-itsme atterrit parfois
+        # sur la LANDING (l'intention "Introduire" est perdue). On est authentifié →
+        # re-cliquer le CTA renvoie directement au formulaire, sans nouvel itsme.
+        # (Pas en session_only : la landing y est déjà un état de succès.)
+        if not session_only and "/urban-information/landing" in page.url:
+            try:
+                dismiss_communication_modal(page)
+                page.get_by_role("link", name=LANDING_CTA_NAME).first.click(timeout=5000)
+                emit("landing_cta_reclicked_post_sso")
+            except Exception:
+                pass
         page.wait_for_timeout(poll_interval_ms)
         elapsed += poll_interval_ms
         n += 1
@@ -232,6 +306,9 @@ def wait_for_form_and_extract_ids(page, output_dir: Path | None = None) -> tuple
     if not form_reached_seen:
         emit_error_and_exit(1, "user did not complete itsme validation in time",
                             timeout_seconds=ITSME_TIMEOUT_SECONDS)
+
+    if session_only:
+        return "", ""
 
     url = page.url
     draft_match = re.search(r"/edit/([0-9a-f]+)/requester", url)
@@ -259,14 +336,16 @@ def wait_for_form_and_extract_ids(page, output_dir: Path | None = None) -> tuple
     return request_id, draft_id
 
 
-def run(playwright: Playwright, data: dict, output_dir: Path, headed: bool = False) -> None:
+def run(playwright: Playwright, data: dict, output_dir: Path, headed: bool = False,
+        session_only: bool = False) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     phone = data.get("phone_number", "").strip()
     if not phone:
         emit_error_and_exit(4, "phone_number missing in input")
+    # Même normalisation que validate_input.py : séparateurs d'abord, préfixe ensuite
+    phone = re.sub(r"[\s.\-/]", "", phone)
     phone = re.sub(r"^(\+32|0032|0)", "", phone)
-    phone = re.sub(r"\s+", "", phone)
     if not re.fullmatch(r"\d{8,9}", phone):
         emit_error_and_exit(4, "phone_number format invalid", phone=phone)
 
@@ -284,7 +363,10 @@ def run(playwright: Playwright, data: dict, output_dir: Path, headed: bool = Fal
 
         page = context.new_page()
         try:
-            navigate_to_itsme_phone_form(page, phone)
+            if session_only:
+                navigate_session_only(page, phone)
+            else:
+                navigate_to_itsme_phone_form(page, phone)
         except PlaywrightTimeoutError as e:
             emit_error_and_exit(3, "IRISbox/CSAM/itsme navigation timed out", detail=str(e))
 
@@ -294,11 +376,15 @@ def run(playwright: Playwright, data: dict, output_dir: Path, headed: bool = Fal
              icon_path=str(icon_path),
              expires_in=180)
 
-        request_id, draft_id = wait_for_form_and_extract_ids(page, output_dir)
-        emit("form_reached",
-             url=page.url,
-             request_id=request_id,
-             draft_id=draft_id)
+        request_id, draft_id = wait_for_form_and_extract_ids(page, output_dir,
+                                                             session_only=session_only)
+        if session_only:
+            emit("session_ready", url=page.url)
+        else:
+            emit("form_reached",
+                 url=page.url,
+                 request_id=request_id,
+                 draft_id=draft_id)
     finally:
         # Sauvegarde de session AVANT de fermer le browser, même en cas d'exception
         # post-itsme (ex: timeout networkidle). Sans ça on perd les 44s d'interaction
@@ -320,6 +406,9 @@ def main() -> None:
                         help="Where to write icon.png, storage_state.json, logs")
     parser.add_argument("--headed", action="store_true",
                         help="Run browser visible (debug mode). Default = headless (prod).")
+    parser.add_argument("--session-only", action="store_true",
+                        help="Auth par Mon espace SANS créer de demande — pour reprendre "
+                             "un draft existant après expiration de session.")
     args = parser.parse_args()
 
     if not args.data.is_file():
@@ -328,7 +417,7 @@ def main() -> None:
     data = json.loads(args.data.read_text(encoding="utf-8"))
 
     with sync_playwright() as pw:
-        run(pw, data, args.output_dir, headed=args.headed)
+        run(pw, data, args.output_dir, headed=args.headed, session_only=args.session_only)
 
 
 if __name__ == "__main__":
